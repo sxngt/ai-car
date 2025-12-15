@@ -1,5 +1,6 @@
 """
-중앙 유지 주행 코드 - 원래 모터 제어 방식 사용
+완주 전략: 느리고 촘촘하게 방향 조절
+펄스 방식 - 짧게 동작 후 멈추고 판단 반복
 """
 import time
 import mycamera
@@ -18,7 +19,6 @@ BIN1 = DigitalOutputDevice(25)
 BIN2 = DigitalOutputDevice(24)
 
 
-# 원래 driving.py와 동일한 모터 제어 함수들
 def motor_go(speed):
     AIN1.value = 0
     AIN2.value = 1
@@ -52,29 +52,30 @@ def motor_stop():
 
 
 # ===== 파라미터 (조정 가능) =====
-SPEED = 0.5               # 주행 속도
-TURN_SPEED = 0.5          # 회전 속도
-WALL_THRESHOLD = 50       # 벽 판정 밝기
-DEAD_ZONE = 0.15          # 좌우 차이가 이 이하면 직진
+SPEED = 0.35              # 느린 속도
+TURN_SPEED = 0.4          # 회전 속도
+WALL_THRESHOLD = 80       # 벽 판정 밝기
+DEAD_ZONE = 0.08          # 좌우 차이 임계값
+
+# 펄스 타이밍 (초)
+PULSE_DURATION = 0.08     # 한 번 동작 시간
+PAUSE_DURATION = 0.02     # 동작 후 멈춤 시간
 
 
 def analyze_regions(image):
     """이미지를 좌/중/우 3개 영역으로 나누어 벽 비율 분석"""
     height, width = image.shape[:2]
 
-    # 상단 노이즈 제거: 하단 55%만 사용
     roi_top = int(height * 0.45)
     roi = image[roi_top:, :]
 
-    # 그레이스케일 변환
     if len(roi.shape) == 3:
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     else:
         gray = roi
 
-    roi_height, roi_width = gray.shape
+    roi_width = gray.shape[1]
 
-    # 좌/중/우 영역 정의
     third = roi_width // 3
     left_region = gray[:, :third]
     center_region = gray[:, third:third*2]
@@ -85,46 +86,47 @@ def analyze_regions(image):
         total_pixels = region.size
         return wall_pixels / total_pixels if total_pixels > 0 else 0
 
-    left_ratio = calc_wall_ratio(left_region)
-    center_ratio = calc_wall_ratio(center_region)
-    right_ratio = calc_wall_ratio(right_region)
-
-    return left_ratio, center_ratio, right_ratio
+    return calc_wall_ratio(left_region), calc_wall_ratio(center_region), calc_wall_ratio(right_region)
 
 
 def decide_direction(left_ratio, right_ratio):
-    """
-    좌우 벽 비율로 방향 결정
-    Returns: "go", "left", "right"
-    """
+    """좌우 벽 비율로 방향 결정"""
     diff = left_ratio - right_ratio
 
-    # 데드존: 차이가 작으면 직진
     if abs(diff) < DEAD_ZONE:
-        return "go"
-
-    # 왼쪽 벽이 많으면 오른쪽으로
-    if diff > 0:
-        return "right"
+        return "go", diff
+    elif diff > 0:
+        return "right", diff
     else:
-        return "left"
+        return "left", diff
+
+
+def pulse_move(direction):
+    """짧은 펄스로 동작 실행"""
+    if direction == "go":
+        motor_go(SPEED)
+    elif direction == "left":
+        motor_left(TURN_SPEED)
+    elif direction == "right":
+        motor_right(TURN_SPEED)
+
+    time.sleep(PULSE_DURATION)
+    motor_stop()
+    time.sleep(PAUSE_DURATION)
 
 
 def draw_debug_info(image, left_ratio, center_ratio, right_ratio, direction):
-    """디버그 정보를 이미지에 표시"""
+    """디버그 정보 표시"""
     height, width = image.shape[:2]
     debug_img = image.copy()
 
-    # ROI 영역 표시
     roi_top = int(height * 0.45)
     cv2.line(debug_img, (0, roi_top), (width, roi_top), (0, 255, 255), 2)
 
-    # 3등분 선 표시
     third = width // 3
     cv2.line(debug_img, (third, roi_top), (third, height), (255, 255, 0), 1)
     cv2.line(debug_img, (third*2, roi_top), (third*2, height), (255, 255, 0), 1)
 
-    # 비율 색상
     def ratio_color(ratio):
         if ratio > 0.5:
             return (0, 0, 255)
@@ -133,7 +135,6 @@ def draw_debug_info(image, left_ratio, center_ratio, right_ratio, direction):
         else:
             return (0, 255, 0)
 
-    # 좌우 비율 표시
     cv2.putText(debug_img, f"L:{left_ratio:.2f}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, ratio_color(left_ratio), 2)
     cv2.putText(debug_img, f"C:{center_ratio:.2f}", (third + 10, 30),
@@ -141,7 +142,6 @@ def draw_debug_info(image, left_ratio, center_ratio, right_ratio, direction):
     cv2.putText(debug_img, f"R:{right_ratio:.2f}", (third*2 + 10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, ratio_color(right_ratio), 2)
 
-    # 방향 표시
     dir_color = (0, 255, 0) if direction == "go" else (0, 165, 255)
     cv2.putText(debug_img, f"DIR: {direction.upper()}", (10, height - 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, dir_color, 2)
@@ -153,24 +153,12 @@ def main():
     camera = mycamera.MyPiCamera(640, 480)
     car_state = "stop"
 
-    print("=== Simple Lane Keeping ===")
+    print("=== Slow & Steady Strategy ===")
     print("UP: Start | DOWN: Stop | Q: Quit")
-    print(f"SPEED={SPEED}, DEAD_ZONE={DEAD_ZONE}, WALL_THRESHOLD={WALL_THRESHOLD}")
+    print(f"SPEED={SPEED}, PULSE={PULSE_DURATION}s")
 
     try:
         while True:
-            key = cv2.waitKey(1) & 0xFF
-
-            if key == ord('q'):
-                break
-            elif key == 82:  # UP arrow
-                print(">>> START")
-                car_state = "go"
-            elif key == 84:  # DOWN arrow
-                print(">>> STOP")
-                car_state = "stop"
-                motor_stop()
-
             # 카메라 이미지 캡처
             ret, image = camera.read()
             if not ret:
@@ -181,24 +169,28 @@ def main():
             left_ratio, center_ratio, right_ratio = analyze_regions(image)
 
             # 방향 결정
-            direction = decide_direction(left_ratio, right_ratio)
+            direction, diff = decide_direction(left_ratio, right_ratio)
 
             # 디버그 화면
             debug_img = draw_debug_info(image, left_ratio, center_ratio, right_ratio, direction)
-            cv2.imshow('Lane Keep', debug_img)
+            cv2.imshow('Slow Drive', debug_img)
 
-            # 모터 제어
-            if car_state == "go":
-                if direction == "go":
-                    motor_go(SPEED)
-                elif direction == "left":
-                    motor_left(TURN_SPEED)
-                elif direction == "right":
-                    motor_right(TURN_SPEED)
-
-                print(f"L:{left_ratio:.2f} R:{right_ratio:.2f} diff:{left_ratio-right_ratio:+.2f} -> {direction}")
-            else:
+            # 키 입력 처리
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == 82:  # UP arrow
+                print(">>> START")
+                car_state = "go"
+            elif key == 84:  # DOWN arrow
+                print(">>> STOP")
+                car_state = "stop"
                 motor_stop()
+
+            # 모터 제어: 펄스 방식
+            if car_state == "go":
+                pulse_move(direction)
+                print(f"L:{left_ratio:.2f} R:{right_ratio:.2f} diff:{diff:+.2f} -> {direction}")
 
     except KeyboardInterrupt:
         print("\nInterrupted")
