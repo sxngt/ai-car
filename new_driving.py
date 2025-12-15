@@ -202,15 +202,16 @@ def main():
 
             # 모터 제어
             if car_state == "go":
-                if direction == "go":
-                    motor_go(SPEED)
-                    print(f"[MOTOR] GO speed={SPEED}")
-                elif direction == "left":
+                # offset이 크면 직진 금지, 조향만 실행
+                if direction == "left":
                     motor_left(TURN_SPEED)
                     print(f"[MOTOR] LEFT speed={TURN_SPEED}")
                 elif direction == "right":
                     motor_right(TURN_SPEED)
                     print(f"[MOTOR] RIGHT speed={TURN_SPEED}")
+                else:  # direction == "go" (중앙에 있을 때만 직진)
+                    motor_go(SPEED)
+                    print(f"[MOTOR] GO speed={SPEED}")
 
                 print(f"Road:{road_center} Frame:{frame_center} Offset:{offset:+d} -> {direction}")
             else:
