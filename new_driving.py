@@ -46,7 +46,11 @@ def motor_right(speed):
 
 
 def motor_stop():
+    AIN1.value = 0
+    AIN2.value = 1
     PWMA.value = 0.0
+    BIN1.value = 1
+    BIN2.value = 0
     PWMB.value = 0.0
 
 
