@@ -1,8 +1,7 @@
 """
-완주 전략: 느리고 촘촘하게 방향 조절
-펄스 방식 - 짧게 동작 후 멈추고 판단 반복
+도로 중앙 추종 방식
+밝은 영역(도로)의 중심을 찾아 화면 중앙과의 차이로 조향
 """
-import time
 import mycamera
 import cv2
 import numpy as np
@@ -52,97 +51,103 @@ def motor_stop():
 
 
 # ===== 파라미터 (조정 가능) =====
-SPEED = 0.4               # 전진 속도
-TURN_SPEED = 0.6          # 회전 속도 (높여서 확실히 회전)
-WALL_THRESHOLD = 80       # 벽 판정 밝기
-DEAD_ZONE = 0.08          # 좌우 차이 임계값
-
-# 펄스 타이밍 (초)
-PULSE_DURATION = 0.15     # 한 번 동작 시간 (늘려서 모터가 반응할 시간 확보)
-PAUSE_DURATION = 0.02     # 동작 후 멈춤 시간
+SPEED = 0.45              # 기본 전진 속도
+TURN_SPEED = 0.5          # 회전 속도
+ROAD_THRESHOLD = 100      # 이 밝기 이상을 도로로 인식 (벽보다 밝은 영역)
+CENTER_DEADZONE = 30      # 중앙에서 이 픽셀 이내면 직진 (화면 너비의 약 5%)
 
 
-def analyze_regions(image):
-    """이미지를 좌/중/우 3개 영역으로 나누어 벽 비율 분석"""
+def find_road_center(image):
+    """
+    도로(밝은 영역)의 중심 x좌표를 찾음
+
+    Returns:
+        center_x: 도로 중심의 x좌표
+        frame_center: 화면 중앙 x좌표
+        confidence: 도로 감지 신뢰도 (0~1)
+    """
     height, width = image.shape[:2]
 
-    roi_top = int(height * 0.45)
+    # 상단 노이즈 제거: 하단 50%만 사용
+    roi_top = int(height * 0.5)
     roi = image[roi_top:, :]
 
+    # 그레이스케일 변환
     if len(roi.shape) == 3:
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     else:
         gray = roi
 
-    roi_width = gray.shape[1]
+    # 도로(밝은 영역) 마스크 생성
+    road_mask = gray > ROAD_THRESHOLD
 
-    third = roi_width // 3
-    left_region = gray[:, :third]
-    center_region = gray[:, third:third*2]
-    right_region = gray[:, third*2:]
+    # 도로 픽셀이 거의 없으면 중앙 반환
+    road_pixels = np.sum(road_mask)
+    total_pixels = road_mask.size
+    confidence = road_pixels / total_pixels
 
-    def calc_wall_ratio(region):
-        wall_pixels = np.sum(region < WALL_THRESHOLD)
-        total_pixels = region.size
-        return wall_pixels / total_pixels if total_pixels > 0 else 0
+    if confidence < 0.05:  # 도로가 거의 안 보이면
+        return width // 2, width // 2, 0.0
 
-    return calc_wall_ratio(left_region), calc_wall_ratio(center_region), calc_wall_ratio(right_region)
+    # 도로 영역의 x좌표들의 평균 (무게중심)
+    road_x_coords = np.where(road_mask)[1]  # [1]은 x좌표
+    if len(road_x_coords) == 0:
+        return width // 2, width // 2, 0.0
+
+    center_x = int(np.mean(road_x_coords))
+    frame_center = width // 2
+
+    return center_x, frame_center, confidence
 
 
-def decide_direction(left_ratio, right_ratio):
-    """좌우 벽 비율로 방향 결정"""
-    diff = left_ratio - right_ratio
+def decide_steering(road_center, frame_center):
+    """
+    도로 중심과 화면 중심의 차이로 조향 결정
 
-    if abs(diff) < DEAD_ZONE:
-        return "go", diff
-    elif diff > 0:
-        return "right", diff
+    Returns:
+        direction: "go", "left", "right"
+        offset: 중앙에서 벗어난 정도 (음수=왼쪽, 양수=오른쪽)
+    """
+    offset = road_center - frame_center
+
+    # 데드존: 중앙 근처면 직진
+    if abs(offset) < CENTER_DEADZONE:
+        return "go", offset
+
+    # 도로 중심이 오른쪽에 있으면 → 오른쪽으로 가야 함
+    if offset > 0:
+        return "right", offset
     else:
-        return "left", diff
+        return "left", offset
 
 
-def pulse_move(direction):
-    """짧은 펄스로 동작 실행"""
-    if direction == "go":
-        motor_go(SPEED)
-    elif direction == "left":
-        motor_left(TURN_SPEED)
-    elif direction == "right":
-        motor_right(TURN_SPEED)
-
-    time.sleep(PULSE_DURATION)
-    motor_stop()
-    time.sleep(PAUSE_DURATION)
-
-
-def draw_debug_info(image, left_ratio, center_ratio, right_ratio, direction):
+def draw_debug_info(image, road_center, frame_center, direction, offset, confidence):
     """디버그 정보 표시"""
     height, width = image.shape[:2]
     debug_img = image.copy()
 
-    roi_top = int(height * 0.45)
+    # ROI 영역 표시
+    roi_top = int(height * 0.5)
     cv2.line(debug_img, (0, roi_top), (width, roi_top), (0, 255, 255), 2)
 
-    third = width // 3
-    cv2.line(debug_img, (third, roi_top), (third, height), (255, 255, 0), 1)
-    cv2.line(debug_img, (third*2, roi_top), (third*2, height), (255, 255, 0), 1)
+    # 화면 중앙선 (파란색)
+    cv2.line(debug_img, (frame_center, roi_top), (frame_center, height), (255, 0, 0), 2)
 
-    def ratio_color(ratio):
-        if ratio > 0.5:
-            return (0, 0, 255)
-        elif ratio > 0.3:
-            return (0, 165, 255)
-        else:
-            return (0, 255, 0)
+    # 도로 중심선 (녹색)
+    cv2.line(debug_img, (road_center, roi_top), (road_center, height), (0, 255, 0), 3)
 
-    cv2.putText(debug_img, f"L:{left_ratio:.2f}", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, ratio_color(left_ratio), 2)
-    cv2.putText(debug_img, f"C:{center_ratio:.2f}", (third + 10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, ratio_color(center_ratio), 2)
-    cv2.putText(debug_img, f"R:{right_ratio:.2f}", (third*2 + 10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, ratio_color(right_ratio), 2)
+    # 데드존 표시 (노란색 영역)
+    cv2.line(debug_img, (frame_center - CENTER_DEADZONE, roi_top),
+             (frame_center - CENTER_DEADZONE, height), (0, 255, 255), 1)
+    cv2.line(debug_img, (frame_center + CENTER_DEADZONE, roi_top),
+             (frame_center + CENTER_DEADZONE, height), (0, 255, 255), 1)
 
+    # 정보 텍스트
     dir_color = (0, 255, 0) if direction == "go" else (0, 165, 255)
+    cv2.putText(debug_img, f"Offset: {offset:+d}px", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(debug_img, f"Conf: {confidence:.2f}", (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     cv2.putText(debug_img, f"DIR: {direction.upper()}", (10, height - 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, dir_color, 2)
 
@@ -153,9 +158,9 @@ def main():
     camera = mycamera.MyPiCamera(640, 480)
     car_state = "stop"
 
-    print("=== Slow & Steady Strategy ===")
+    print("=== Road Center Following ===")
     print("UP: Start | DOWN: Stop | Q: Quit")
-    print(f"SPEED={SPEED}, PULSE={PULSE_DURATION}s")
+    print(f"SPEED={SPEED}, ROAD_THRESHOLD={ROAD_THRESHOLD}, DEADZONE={CENTER_DEADZONE}px")
 
     try:
         while True:
@@ -165,15 +170,15 @@ def main():
                 continue
             image = cv2.flip(image, -1)
 
-            # 벽 비율 분석
-            left_ratio, center_ratio, right_ratio = analyze_regions(image)
+            # 도로 중심 찾기
+            road_center, frame_center, confidence = find_road_center(image)
 
-            # 방향 결정
-            direction, diff = decide_direction(left_ratio, right_ratio)
+            # 조향 결정
+            direction, offset = decide_steering(road_center, frame_center)
 
             # 디버그 화면
-            debug_img = draw_debug_info(image, left_ratio, center_ratio, right_ratio, direction)
-            cv2.imshow('Slow Drive', debug_img)
+            debug_img = draw_debug_info(image, road_center, frame_center, direction, offset, confidence)
+            cv2.imshow('Road Center', debug_img)
 
             # 키 입력 처리
             key = cv2.waitKey(1) & 0xFF
@@ -187,10 +192,18 @@ def main():
                 car_state = "stop"
                 motor_stop()
 
-            # 모터 제어: 펄스 방식
+            # 모터 제어
             if car_state == "go":
-                pulse_move(direction)
-                print(f"L:{left_ratio:.2f} R:{right_ratio:.2f} diff:{diff:+.2f} -> {direction}")
+                if direction == "go":
+                    motor_go(SPEED)
+                elif direction == "left":
+                    motor_left(TURN_SPEED)
+                elif direction == "right":
+                    motor_right(TURN_SPEED)
+
+                print(f"Road:{road_center} Frame:{frame_center} Offset:{offset:+d} -> {direction}")
+            else:
+                motor_stop()
 
     except KeyboardInterrupt:
         print("\nInterrupted")
