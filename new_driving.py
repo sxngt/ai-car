@@ -1,6 +1,7 @@
 """
-도로 중앙 추종 방식
+도로 중앙 추종 방식 + 장애물 감지 정지
 밝은 영역(도로)의 중심을 찾아 화면 중앙과의 차이로 조향
+전방에 장애물(어두운 물체) 감지 시 정지
 """
 import mycamera
 import cv2
@@ -63,6 +64,12 @@ TURN_SPEED = 0.75         # 회전 속도 (높여서 확실히 동작)
 ROAD_THRESHOLD = 100      # 이 밝기 이상을 도로로 인식 (벽보다 밝은 영역)
 CENTER_DEADZONE = 30      # 중앙에서 이 픽셀 이내면 직진 (화면 너비의 약 5%)
 
+# ===== 장애물 감지 파라미터 =====
+OBSTACLE_THRESHOLD = 80   # 이 밝기 이하를 장애물로 인식 (도로보다 어두운 물체)
+OBSTACLE_RATIO = 0.3      # 감지 영역의 30% 이상이 장애물이면 정지
+OBSTACLE_ROI_HEIGHT = 0.3 # 화면 하단 30%를 장애물 감지 영역으로 사용
+OBSTACLE_ROI_WIDTH = 0.4  # 화면 중앙 40%를 장애물 감지 영역으로 사용
+
 
 def find_road_center(image):
     """
@@ -107,6 +114,49 @@ def find_road_center(image):
     return center_x, frame_center, confidence
 
 
+def detect_obstacle(image):
+    """
+    전방 장애물 감지
+    화면 하단 중앙에 도로보다 어두운 물체가 있으면 장애물로 판단
+
+    Returns:
+        is_obstacle: 장애물 감지 여부
+        obstacle_ratio: 장애물 비율 (0~1)
+        roi_rect: 감지 영역 좌표 (x1, y1, x2, y2)
+    """
+    height, width = image.shape[:2]
+
+    # 감지 영역: 화면 하단 중앙
+    roi_h = int(height * OBSTACLE_ROI_HEIGHT)
+    roi_w = int(width * OBSTACLE_ROI_WIDTH)
+
+    x1 = (width - roi_w) // 2
+    x2 = x1 + roi_w
+    y1 = height - roi_h
+    y2 = height
+
+    roi = image[y1:y2, x1:x2]
+
+    # 그레이스케일 변환
+    if len(roi.shape) == 3:
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = roi
+
+    # 장애물(어두운 영역) 마스크 생성
+    obstacle_mask = gray < OBSTACLE_THRESHOLD
+
+    # 장애물 비율 계산
+    obstacle_pixels = np.sum(obstacle_mask)
+    total_pixels = obstacle_mask.size
+    obstacle_ratio = obstacle_pixels / total_pixels
+
+    # 장애물 판정
+    is_obstacle = obstacle_ratio > OBSTACLE_RATIO
+
+    return is_obstacle, obstacle_ratio, (x1, y1, x2, y2)
+
+
 def decide_steering(road_center, frame_center):
     """
     도로 중심과 화면 중심의 차이로 조향 결정
@@ -128,7 +178,8 @@ def decide_steering(road_center, frame_center):
         return "left", offset
 
 
-def draw_debug_info(image, road_center, frame_center, direction, offset, confidence):
+def draw_debug_info(image, road_center, frame_center, direction, offset, confidence,
+                    is_obstacle=False, obstacle_ratio=0.0, obstacle_roi=None):
     """디버그 정보 표시"""
     height, width = image.shape[:2]
     debug_img = image.copy()
@@ -149,13 +200,30 @@ def draw_debug_info(image, road_center, frame_center, direction, offset, confide
     cv2.line(debug_img, (frame_center + CENTER_DEADZONE, roi_top),
              (frame_center + CENTER_DEADZONE, height), (0, 255, 255), 1)
 
+    # 장애물 감지 영역 표시
+    if obstacle_roi:
+        x1, y1, x2, y2 = obstacle_roi
+        color = (0, 0, 255) if is_obstacle else (0, 255, 0)  # 빨강: 장애물, 초록: 안전
+        cv2.rectangle(debug_img, (x1, y1), (x2, y2), color, 2)
+        if is_obstacle:
+            cv2.putText(debug_img, "OBSTACLE!", (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
     # 정보 텍스트
-    dir_color = (0, 255, 0) if direction == "go" else (0, 165, 255)
+    if is_obstacle:
+        dir_color = (0, 0, 255)  # 빨강
+        direction_text = "STOP!"
+    else:
+        dir_color = (0, 255, 0) if direction == "go" else (0, 165, 255)
+        direction_text = direction.upper()
+
     cv2.putText(debug_img, f"Offset: {offset:+d}px", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     cv2.putText(debug_img, f"Conf: {confidence:.2f}", (10, 60),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-    cv2.putText(debug_img, f"DIR: {direction.upper()}", (10, height - 20),
+    cv2.putText(debug_img, f"Obstacle: {obstacle_ratio:.1%}", (10, 90),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(debug_img, f"DIR: {direction_text}", (10, height - 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, dir_color, 2)
 
     return debug_img
@@ -164,10 +232,12 @@ def draw_debug_info(image, road_center, frame_center, direction, offset, confide
 def main():
     camera = mycamera.MyPiCamera(640, 480)
     car_state = "stop"
+    obstacle_stopped = False  # 장애물로 인한 정지 상태
 
-    print("=== Road Center Following ===")
+    print("=== Road Center Following + Obstacle Detection ===")
     print("UP: Start | DOWN: Stop | Q: Quit")
     print(f"SPEED={SPEED}, ROAD_THRESHOLD={ROAD_THRESHOLD}, DEADZONE={CENTER_DEADZONE}px")
+    print(f"OBSTACLE: threshold={OBSTACLE_THRESHOLD}, ratio={OBSTACLE_RATIO:.0%}")
 
     try:
         while True:
@@ -180,11 +250,15 @@ def main():
             # 도로 중심 찾기
             road_center, frame_center, confidence = find_road_center(image)
 
+            # 장애물 감지
+            is_obstacle, obstacle_ratio, obstacle_roi = detect_obstacle(image)
+
             # 조향 결정
             direction, offset = decide_steering(road_center, frame_center)
 
             # 디버그 화면
-            debug_img = draw_debug_info(image, road_center, frame_center, direction, offset, confidence)
+            debug_img = draw_debug_info(image, road_center, frame_center, direction, offset, confidence,
+                                        is_obstacle, obstacle_ratio, obstacle_roi)
             cv2.imshow('Road Center', debug_img)
 
             # 키 입력 처리
@@ -194,25 +268,35 @@ def main():
             elif key == 82:  # UP arrow
                 print(">>> START")
                 car_state = "go"
+                obstacle_stopped = False
             elif key == 84:  # DOWN arrow
                 print(">>> STOP")
                 car_state = "stop"
+                obstacle_stopped = False
                 motor_stop()
 
             # 모터 제어
             if car_state == "go":
-                # offset이 크면 직진 금지, 조향만 실행
-                if direction == "left":
-                    motor_left(TURN_SPEED)
-                    print(f"[MOTOR] LEFT speed={TURN_SPEED}")
-                elif direction == "right":
-                    motor_right(TURN_SPEED)
-                    print(f"[MOTOR] RIGHT speed={TURN_SPEED}")
-                else:  # direction == "go" (중앙에 있을 때만 직진)
-                    motor_go(SPEED)
-                    print(f"[MOTOR] GO speed={SPEED}")
+                # 장애물 감지 시 즉시 정지
+                if is_obstacle:
+                    if not obstacle_stopped:
+                        print(f"[OBSTACLE DETECTED] ratio={obstacle_ratio:.1%} -> EMERGENCY STOP!")
+                        obstacle_stopped = True
+                    motor_stop()
+                else:
+                    obstacle_stopped = False
+                    # offset이 크면 직진 금지, 조향만 실행
+                    if direction == "left":
+                        motor_left(TURN_SPEED)
+                        print(f"[MOTOR] LEFT speed={TURN_SPEED}")
+                    elif direction == "right":
+                        motor_right(TURN_SPEED)
+                        print(f"[MOTOR] RIGHT speed={TURN_SPEED}")
+                    else:  # direction == "go" (중앙에 있을 때만 직진)
+                        motor_go(SPEED)
+                        print(f"[MOTOR] GO speed={SPEED}")
 
-                print(f"Road:{road_center} Frame:{frame_center} Offset:{offset:+d} -> {direction}")
+                    print(f"Road:{road_center} Frame:{frame_center} Offset:{offset:+d} -> {direction}")
             else:
                 motor_stop()
 
