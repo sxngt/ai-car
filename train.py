@@ -3,7 +3,7 @@
 """
 자율주행 자동차 모델 학습 스크립트
 NVIDIA End-to-End Learning Model for Self-Driving Cars
-M1 Max 최적화 버전
+RTX 4090 최적화 버전
 """
 
 import os
@@ -27,7 +27,7 @@ import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Conv2D, Dropout, Flatten, Dense
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import ModelCheckpoint
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 
 # sklearn
 from sklearn.model_selection import train_test_split
@@ -44,21 +44,25 @@ if gpus:
     print(f"GPU devices: {gpus}")
     for gpu in gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
+    # Mixed Precision for RTX 4090 (FP16 + TensorCore 가속)
+    tf.keras.mixed_precision.set_global_policy('mixed_float16')
+    print("Mixed precision enabled: mixed_float16")
 else:
     print("No GPU found, using CPU")
 
 # ====================
-# 설정
+# 설정 (RTX 4090 최적화)
 # ====================
 DATA_DIR = Path(__file__).parent / "data" / "video"
 OUTPUT_DIR = Path(__file__).parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-BATCH_SIZE = 100
-EPOCHS = 100
-STEPS_PER_EPOCH = 150
-VALIDATION_STEPS = 200
-LEARNING_RATE = 1e-3
+# RTX 4090: 24GB VRAM, Ada Lovelace, TensorCore 지원
+BATCH_SIZE = 256          # 4090은 큰 배치 처리 가능 (100 → 256)
+EPOCHS = 50               # Early stopping 사용으로 감소 (100 → 50)
+STEPS_PER_EPOCH = 300     # 더 많은 스텝으로 학습 (150 → 300)
+VALIDATION_STEPS = 100    # 검증 스텝 조정
+LEARNING_RATE = 3e-4      # 큰 배치에 맞게 조정 (1e-3 → 3e-4)
 
 
 def load_data(data_dir: Path) -> tuple[list[str], list[int]]:
@@ -164,12 +168,31 @@ def main():
 
     # 4. 콜백 설정
     checkpoint_path = OUTPUT_DIR / "lane_navigation_check.keras"
-    checkpoint_callback = ModelCheckpoint(
-        filepath=str(checkpoint_path),
-        verbose=1,
-        save_best_only=True,
-        monitor='val_loss'
-    )
+
+    callbacks = [
+        # 최적 모델 저장
+        ModelCheckpoint(
+            filepath=str(checkpoint_path),
+            verbose=1,
+            save_best_only=True,
+            monitor='val_loss'
+        ),
+        # 조기 종료: val_loss 10 에폭 동안 개선 없으면 중단
+        EarlyStopping(
+            monitor='val_loss',
+            patience=10,
+            restore_best_weights=True,
+            verbose=1
+        ),
+        # 학습률 감소: val_loss 5 에폭 동안 개선 없으면 학습률 절반
+        ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,
+            patience=5,
+            min_lr=1e-6,
+            verbose=1
+        )
+    ]
 
     # 5. 학습
     print("\n[4/5] 모델 학습 시작...")
@@ -183,7 +206,7 @@ def main():
         validation_data=image_data_generator(X_valid, y_valid, batch_size=BATCH_SIZE),
         validation_steps=VALIDATION_STEPS,
         verbose=1,
-        callbacks=[checkpoint_callback]
+        callbacks=callbacks
     )
 
     # 6. 최종 모델 저장
