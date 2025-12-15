@@ -1,6 +1,5 @@
 """
-중앙 유지 주행 코드
-좌우 벽 비율 차이에 비례해서 연속적으로 조향
+중앙 유지 주행 코드 - 원래 모터 제어 방식 사용
 """
 import time
 import mycamera
@@ -19,20 +18,32 @@ BIN1 = DigitalOutputDevice(25)
 BIN2 = DigitalOutputDevice(24)
 
 
-def motor_forward(left_speed, right_speed):
-    """차등 구동: 좌우 바퀴 속도를 다르게 해서 부드러운 조향"""
-    left_speed = max(0, min(1, left_speed))
-    right_speed = max(0, min(1, right_speed))
-
-    # 왼쪽 모터 (A) 전진
+# 원래 driving.py와 동일한 모터 제어 함수들
+def motor_go(speed):
     AIN1.value = 0
     AIN2.value = 1
-    PWMA.value = left_speed
-
-    # 오른쪽 모터 (B) 전진
+    PWMA.value = speed
     BIN1.value = 1
     BIN2.value = 0
-    PWMB.value = right_speed
+    PWMB.value = speed
+
+
+def motor_left(speed):
+    AIN1.value = 0
+    AIN2.value = 1
+    PWMA.value = speed
+    BIN1.value = 0
+    BIN2.value = 1
+    PWMB.value = speed
+
+
+def motor_right(speed):
+    AIN1.value = 1
+    AIN2.value = 0
+    PWMA.value = speed
+    BIN1.value = 1
+    BIN2.value = 0
+    PWMB.value = speed
 
 
 def motor_stop():
@@ -41,18 +52,14 @@ def motor_stop():
 
 
 # ===== 파라미터 (조정 가능) =====
-BASE_SPEED = 0.5          # 기본 주행 속도
-STEERING_GAIN = 0.6       # 조향 민감도
-WALL_THRESHOLD = 50       # 벽 판정 밝기 (낮출수록 더 어두운 것만 벽으로 인식)
-MIN_SPEED = 0.35          # 회전 시 느린쪽 바퀴 최소 속도
-DEAD_ZONE = 0.15          # 좌우 차이가 이 이하면 직진 (직진성 강화)
+SPEED = 0.5               # 주행 속도
+TURN_SPEED = 0.5          # 회전 속도
+WALL_THRESHOLD = 50       # 벽 판정 밝기
+DEAD_ZONE = 0.15          # 좌우 차이가 이 이하면 직진
 
 
 def analyze_regions(image):
-    """
-    이미지를 좌/우 2개 영역으로 나누어 벽 비율 분석
-    중앙은 별도로 체크 (전방 장애물)
-    """
+    """이미지를 좌/중/우 3개 영역으로 나누어 벽 비율 분석"""
     height, width = image.shape[:2]
 
     # 상단 노이즈 제거: 하단 55%만 사용
@@ -85,52 +92,25 @@ def analyze_regions(image):
     return left_ratio, center_ratio, right_ratio
 
 
-def calculate_steering(left_ratio, right_ratio):
+def decide_direction(left_ratio, right_ratio):
     """
-    좌우 벽 비율 차이로 조향값 계산
-
-    Returns:
-        steering: -1.0 (왼쪽으로) ~ 0 (직진) ~ +1.0 (오른쪽으로)
+    좌우 벽 비율로 방향 결정
+    Returns: "go", "left", "right"
     """
     diff = left_ratio - right_ratio
 
     # 데드존: 차이가 작으면 직진
     if abs(diff) < DEAD_ZONE:
-        return 0.0
+        return "go"
 
-    # 데드존 넘는 부분만 조향에 반영
+    # 왼쪽 벽이 많으면 오른쪽으로
     if diff > 0:
-        adjusted_diff = diff - DEAD_ZONE
+        return "right"
     else:
-        adjusted_diff = diff + DEAD_ZONE
-
-    # 민감도 적용
-    steering = adjusted_diff * STEERING_GAIN
-
-    # 범위 제한
-    steering = max(-1.0, min(1.0, steering))
-
-    return steering
+        return "left"
 
 
-def apply_steering(base_speed, steering):
-    """
-    조향값을 적용해서 좌우 바퀴 속도 계산
-
-    steering > 0: 오른쪽으로 → 왼쪽 바퀴 빠르게
-    steering < 0: 왼쪽으로 → 오른쪽 바퀴 빠르게
-    """
-    left_speed = base_speed * (1 + steering)
-    right_speed = base_speed * (1 - steering)
-
-    # 최소 속도 보장 (한쪽이 너무 느리면 회전 안됨)
-    left_speed = max(MIN_SPEED, min(1.0, left_speed))
-    right_speed = max(MIN_SPEED, min(1.0, right_speed))
-
-    return left_speed, right_speed
-
-
-def draw_debug_info(image, left_ratio, center_ratio, right_ratio, steering, left_spd, right_spd):
+def draw_debug_info(image, left_ratio, center_ratio, right_ratio, direction):
     """디버그 정보를 이미지에 표시"""
     height, width = image.shape[:2]
     debug_img = image.copy()
@@ -161,18 +141,10 @@ def draw_debug_info(image, left_ratio, center_ratio, right_ratio, steering, left
     cv2.putText(debug_img, f"R:{right_ratio:.2f}", (third*2 + 10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, ratio_color(right_ratio), 2)
 
-    # 조향값 시각화 (중앙에 화살표)
-    center_x = width // 2
-    center_y = height - 50
-    arrow_len = int(steering * 100)
-    color = (0, 255, 255) if abs(steering) < 0.3 else (0, 165, 255) if abs(steering) < 0.6 else (0, 0, 255)
-    cv2.arrowedLine(debug_img, (center_x, center_y), (center_x + arrow_len, center_y), color, 3)
-
-    # 조향값 및 속도 표시
-    cv2.putText(debug_img, f"Steer:{steering:+.2f}", (10, height - 60),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-    cv2.putText(debug_img, f"L:{left_spd:.2f} R:{right_spd:.2f}", (10, height - 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    # 방향 표시
+    dir_color = (0, 255, 0) if direction == "go" else (0, 165, 255)
+    cv2.putText(debug_img, f"DIR: {direction.upper()}", (10, height - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, dir_color, 2)
 
     return debug_img
 
@@ -181,9 +153,9 @@ def main():
     camera = mycamera.MyPiCamera(640, 480)
     car_state = "stop"
 
-    print("=== Center-Keeping Drive ===")
+    print("=== Simple Lane Keeping ===")
     print("UP: Start | DOWN: Stop | Q: Quit")
-    print(f"BASE_SPEED={BASE_SPEED}, STEERING_GAIN={STEERING_GAIN}")
+    print(f"SPEED={SPEED}, DEAD_ZONE={DEAD_ZONE}, WALL_THRESHOLD={WALL_THRESHOLD}")
 
     try:
         while True:
@@ -208,20 +180,23 @@ def main():
             # 벽 비율 분석
             left_ratio, center_ratio, right_ratio = analyze_regions(image)
 
-            # 조향값 계산 (항상 중앙 유지하려고 함)
-            steering = calculate_steering(left_ratio, right_ratio)
-
-            # 좌우 바퀴 속도 계산
-            left_spd, right_spd = apply_steering(BASE_SPEED, steering)
+            # 방향 결정
+            direction = decide_direction(left_ratio, right_ratio)
 
             # 디버그 화면
-            debug_img = draw_debug_info(image, left_ratio, center_ratio, right_ratio, steering, left_spd, right_spd)
-            cv2.imshow('Center Keep', debug_img)
+            debug_img = draw_debug_info(image, left_ratio, center_ratio, right_ratio, direction)
+            cv2.imshow('Lane Keep', debug_img)
 
             # 모터 제어
             if car_state == "go":
-                motor_forward(left_spd, right_spd)
-                print(f"L:{left_ratio:.2f} R:{right_ratio:.2f} -> steer:{steering:+.2f} | spd L:{left_spd:.2f} R:{right_spd:.2f}")
+                if direction == "go":
+                    motor_go(SPEED)
+                elif direction == "left":
+                    motor_left(TURN_SPEED)
+                elif direction == "right":
+                    motor_right(TURN_SPEED)
+
+                print(f"L:{left_ratio:.2f} R:{right_ratio:.2f} diff:{left_ratio-right_ratio:+.2f} -> {direction}")
             else:
                 motor_stop()
 
