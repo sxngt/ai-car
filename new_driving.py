@@ -42,9 +42,10 @@ def motor_stop():
 
 # ===== 파라미터 (조정 가능) =====
 BASE_SPEED = 0.5          # 기본 주행 속도
-STEERING_GAIN = 2.0       # 조향 민감도 (높일수록 빠르게 반응)
-WALL_THRESHOLD = 100      # 벽 판정 밝기 (0-255)
-MIN_SPEED = 0.15          # 회전 시 느린쪽 바퀴 최소 속도
+STEERING_GAIN = 0.6       # 조향 민감도
+WALL_THRESHOLD = 50       # 벽 판정 밝기 (낮출수록 더 어두운 것만 벽으로 인식)
+MIN_SPEED = 0.35          # 회전 시 느린쪽 바퀴 최소 속도
+DEAD_ZONE = 0.15          # 좌우 차이가 이 이하면 직진 (직진성 강화)
 
 
 def analyze_regions(image):
@@ -91,12 +92,20 @@ def calculate_steering(left_ratio, right_ratio):
     Returns:
         steering: -1.0 (왼쪽으로) ~ 0 (직진) ~ +1.0 (오른쪽으로)
     """
-    # 왼쪽 벽이 많으면 양수 (오른쪽으로 틀어야 함)
-    # 오른쪽 벽이 많으면 음수 (왼쪽으로 틀어야 함)
     diff = left_ratio - right_ratio
 
+    # 데드존: 차이가 작으면 직진
+    if abs(diff) < DEAD_ZONE:
+        return 0.0
+
+    # 데드존 넘는 부분만 조향에 반영
+    if diff > 0:
+        adjusted_diff = diff - DEAD_ZONE
+    else:
+        adjusted_diff = diff + DEAD_ZONE
+
     # 민감도 적용
-    steering = diff * STEERING_GAIN
+    steering = adjusted_diff * STEERING_GAIN
 
     # 범위 제한
     steering = max(-1.0, min(1.0, steering))
