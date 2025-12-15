@@ -52,13 +52,13 @@ def motor_stop():
 
 
 # ===== 파라미터 (조정 가능) =====
-SPEED = 0.35              # 느린 속도
-TURN_SPEED = 0.4          # 회전 속도
+SPEED = 0.4               # 전진 속도
+TURN_SPEED = 0.6          # 회전 속도 (높여서 확실히 회전)
 WALL_THRESHOLD = 80       # 벽 판정 밝기
 DEAD_ZONE = 0.08          # 좌우 차이 임계값
 
 # 펄스 타이밍 (초)
-PULSE_DURATION = 0.08     # 한 번 동작 시간
+PULSE_DURATION = 0.15     # 한 번 동작 시간 (늘려서 모터가 반응할 시간 확보)
 PAUSE_DURATION = 0.02     # 동작 후 멈춤 시간
 
 
