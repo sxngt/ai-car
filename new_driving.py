@@ -55,8 +55,8 @@ def motor_stop():
 
 
 # ===== 파라미터 (조정 가능) =====
-SPEED = 0.45              # 기본 전진 속도
-TURN_SPEED = 0.5          # 회전 속도
+SPEED = 0.7               # 기본 전진 속도 (원래 driving.py는 0.8 사용)
+TURN_SPEED = 0.75         # 회전 속도 (높여서 확실히 동작)
 ROAD_THRESHOLD = 100      # 이 밝기 이상을 도로로 인식 (벽보다 밝은 영역)
 CENTER_DEADZONE = 30      # 중앙에서 이 픽셀 이내면 직진 (화면 너비의 약 5%)
 
@@ -200,10 +200,13 @@ def main():
             if car_state == "go":
                 if direction == "go":
                     motor_go(SPEED)
+                    print(f"[MOTOR] GO speed={SPEED}")
                 elif direction == "left":
                     motor_left(TURN_SPEED)
+                    print(f"[MOTOR] LEFT speed={TURN_SPEED}")
                 elif direction == "right":
                     motor_right(TURN_SPEED)
+                    print(f"[MOTOR] RIGHT speed={TURN_SPEED}")
 
                 print(f"Road:{road_center} Frame:{frame_center} Offset:{offset:+d} -> {direction}")
             else:
