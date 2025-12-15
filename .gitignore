@@ -43,7 +43,6 @@ output/
 *.keras
 *.h5
 *.pickle
-data/
 
 # uv
 uv.lock
