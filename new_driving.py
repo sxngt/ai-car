@@ -19,6 +19,7 @@ BIN2 = DigitalOutputDevice(24)
 
 
 def motor_go(speed):
+    print(f"  -> motor_go({speed})")
     AIN1.value = 0
     AIN2.value = 1
     PWMA.value = speed
@@ -28,6 +29,7 @@ def motor_go(speed):
 
 
 def motor_left(speed):
+    print(f"  -> motor_left({speed})")
     AIN1.value = 0
     AIN2.value = 1
     PWMA.value = speed
@@ -37,6 +39,7 @@ def motor_left(speed):
 
 
 def motor_right(speed):
+    print(f"  -> motor_right({speed})")
     AIN1.value = 1
     AIN2.value = 0
     PWMA.value = speed
@@ -46,6 +49,7 @@ def motor_right(speed):
 
 
 def motor_stop():
+    print(f"  -> motor_stop()")
     AIN1.value = 0
     AIN2.value = 1
     PWMA.value = 0.0
