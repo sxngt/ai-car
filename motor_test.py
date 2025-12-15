@@ -20,8 +20,8 @@ SPEED = 0.7
 
 def motor_go():
     print(">>> GO (전진)")
-    AIN1.value = 1
-    AIN2.value = 0
+    AIN1.value = 0
+    AIN2.value = 1
     PWMA.value = SPEED
     BIN1.value = 0
     BIN2.value = 1
@@ -43,8 +43,8 @@ def motor_left():
     AIN1.value = 1
     AIN2.value = 0
     PWMA.value = SPEED
-    BIN1.value = 1
-    BIN2.value = 0
+    BIN1.value = 0
+    BIN2.value = 1
     PWMB.value = SPEED
 
 
@@ -53,8 +53,8 @@ def motor_right():
     AIN1.value = 0
     AIN2.value = 1
     PWMA.value = SPEED
-    BIN1.value = 0
-    BIN2.value = 1
+    BIN1.value = 1
+    BIN2.value = 0
     PWMB.value = SPEED
 
 

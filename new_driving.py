@@ -20,9 +20,9 @@ BIN2 = DigitalOutputDevice(24)
 
 def motor_go(speed):
     print(f"  -> motor_go({speed})")
-    # 전진: 테스트 결과 motor_left 설정이 실제 전진
-    AIN1.value = 1
-    AIN2.value = 0
+    # 전진: 양쪽 모터 전진
+    AIN1.value = 0
+    AIN2.value = 1
     PWMA.value = speed
     BIN1.value = 0
     BIN2.value = 1
@@ -31,23 +31,23 @@ def motor_go(speed):
 
 def motor_left(speed):
     print(f"  -> motor_left({speed})")
-    # 좌회전: 테스트 결과 motor_back 설정이 실제 좌회전
+    # 좌회전: A후진 B전진
     AIN1.value = 1
     AIN2.value = 0
     PWMA.value = speed
-    BIN1.value = 1
-    BIN2.value = 0
+    BIN1.value = 0
+    BIN2.value = 1
     PWMB.value = speed
 
 
 def motor_right(speed):
     print(f"  -> motor_right({speed})")
-    # 우회전: 테스트 결과 기존 motor_go 설정이 실제 우회전
+    # 우회전: A전진 B후진
     AIN1.value = 0
     AIN2.value = 1
     PWMA.value = speed
-    BIN1.value = 0
-    BIN2.value = 1
+    BIN1.value = 1
+    BIN2.value = 0
     PWMB.value = speed
 
 
